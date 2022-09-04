@@ -370,8 +370,8 @@ jobs:
           root:  ~/project
           paths:
             - OldWorkflowID.txt
-      - destroy_environment
-      - revert_migrations
+      - destroy-environment
+      - revert-migrations
 
   cleanup:
     docker:
