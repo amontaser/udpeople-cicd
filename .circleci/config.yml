@@ -397,7 +397,7 @@ jobs:
             else
               echo "This is the new BE + FE infrastructure: workflowID --> ${CIRCLE_WORKFLOW_ID:0:7}"
             fi
-      - notify_slack
+      # - notify_slack
       # - destroy_environment
       # - revert_migrations
             
