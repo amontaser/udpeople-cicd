@@ -370,7 +370,6 @@ jobs:
           root:  ~/project
           paths:
             - OldWorkflowID.txt
-      - notify_slack
       - destroy_environment
       - revert_migrations
 
