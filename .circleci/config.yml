@@ -61,6 +61,7 @@ commands:
               npm install
               npm run migration:revert
             fi
+            
 jobs:
   build-frontend:
     docker:
@@ -78,6 +79,7 @@ jobs:
       - save_cache:
           paths: [frontend/node_modules]
           key: frontend-deps
+
   build-backend:
     docker:
       - image: cimg/node:13.8.0
@@ -94,19 +96,22 @@ jobs:
       - save_cache:
           paths: [backend/node_modules]
           key: backend-deps
+
   test-frontend:
     docker:
       - image: cimg/node:13.8.0
     steps:
       - checkout
       - restore_cache:
-          keys: [frontend-deps]
+          keys: [backend-deps]
       - run:
-          name: Front-end Unit Test
+          name: front-end unit test
           command: |
-            cd frontend
+            cd backend
             npm install
             npm test
+
+                
   test-backend:
     docker:
       - image: cimg/node:13.8.0
@@ -115,26 +120,13 @@ jobs:
       - restore_cache:
           keys: [backend-deps]
       - run:
-          name: Back-end Unit Test
+          name: Back-end unit test
           command: |
             cd backend
             npm install
             npm test
+
   scan-frontend:
-    docker:
-      - image: cimg/node:13.8.0
-    steps:
-      - checkout
-      - restore_cache:
-          keys: [frontend-deps]
-      - run:
-          name: Front-end Scan
-          command: |
-            cd frontend
-            npm install
-            npm audit fix --force --audit-level=critical
-            npm audit --audit-level=critical
-  scan-backend:
     docker:
       - image: cimg/node:13.8.0
     steps:
@@ -142,13 +134,31 @@ jobs:
       - restore_cache:
           keys: [backend-deps]
       - run:
-          name: Back-end Scan
+          name: front-end scan
           command: |
             cd backend
             npm install
             npm audit fix --force --audit-level=critical
             npm audit fix --force --audit-level=critical
             npm audit --audit-level=critical
+
+                
+  scan-backend:  
+    docker:
+      - image: cimg/node:13.8.0
+    steps:
+      - checkout
+      - restore_cache:
+          keys: [backend-deps]
+      - run:
+          name: Back-end scan
+          command: |
+            cd backend
+            npm install
+            npm audit fix --force --audit-level=critical
+            npm audit fix --force --audit-level=critical
+            npm audit --audit-level=critical
+
   deploy-infrastructure:
     docker:
       - image: cimg/base:stable
@@ -195,7 +205,7 @@ jobs:
       - install_awscli
       - install_ansible
       - add_ssh_keys:
-          fingerprints: ["d9:06:93:7c:dd:ac:25:bf:3d:f3:10:f5:5d:69:f6:67"]
+          fingerprints: ["1c:f4:5e:d0:07:0b:2b:5e:b1:25:51:0e:0c:1a:f0:f8"]
       - attach_workspace:
           at: ~/
       - run:
@@ -205,6 +215,8 @@ jobs:
             cat inventory.txt
             ansible-playbook -i inventory.txt configure-server.yml
       - destroy-environment
+      # Here's where you will add some code to rollback on failure      
+
   run-migrations:
     docker:
       - image: cimg/node:13.8.0
@@ -217,6 +229,7 @@ jobs:
             cd backend
             npm install
             npm run migrations > migrations_dump.txt
+            cat migrations_dump.txt
       - run:
           name: Send migration status to kvdb.io
           command: |
@@ -226,6 +239,7 @@ jobs:
             fi
       - destroy-environment
       - revert-migrations
+
   deploy-frontend:
     docker:
       - image: cimg/base:stable
@@ -257,6 +271,7 @@ jobs:
             aws s3 cp dist s3://udapeople-${CIRCLE_WORKFLOW_ID:0:7} --recursive
       - destroy-environment
       - revert-migrations
+                     
   deploy-backend:
     docker:
       - image: cimg/base:stable
@@ -332,50 +347,62 @@ jobs:
 
   cloudfront-update:
     docker:
-      - image: cimg/base:stable
+      - image: amazon/aws-cli
+    working_directory: ~/project
     steps:
       - checkout
-      - install_awscli
-      - install_nodejs
+      - run: yum install -y tar gzip
       - run:
-          name: Save Old Workflow ID to kvdb.io
+          name: Fetch and save the old workflow ID responsible for the last release.
           command: |
-            export OLD_WORKFLOW_ID=$(aws cloudformation \
-                      list-exports --query "Exports[?Name==\`WorkflowID\`].Value" \
-                      --no-paginate --output text)
-            echo "Old Wokflow ID: $OLD_WORKFLOW_ID"
-            curl https://kvdb.io/${KVDB_BUCKET}/old_workflow_id -d "${OLD_WORKFLOW_ID}"
+            OldWorkflowID=$(aws cloudformation list-exports --query "Exports[?Name==\`WorkflowID\`].Value" --no-paginate --output text)
+            echo $OldWorkflowID > OldWorkflowID.txt
+            cat OldWorkflowID.txt
       - run:
-          name: Update cloudfront distribution
+          name: Execute CloudFront template
+          no_output_timeout: 30m
           command: |
-            aws cloudformation deploy \
-              --template-file .circleci/files/cloudfront.yml \
-              --parameter-overrides WorkflowID="${CIRCLE_WORKFLOW_ID:0:7}" \
-              --stack-name InitialStack
+            OldWorkflowID=$(cat OldWorkflowID.txt)
+            aws cloudformation deploy --template-file .circleci/files/cloudfront.yml --stack-name InitialStack --parameter-overrides WorkflowID="${CIRCLE_WORKFLOW_ID:0:7}" --tags project=udapeople
+            echo "OldWorkflowID: ${OldWorkflowID}"
+            echo "NewWorkflowID: ${CIRCLE_WORKFLOW_ID:0:7}"
+      - persist_to_workspace:
+          root:  ~/project
+          paths:
+            - OldWorkflowID.txt
       - destroy-environment
       - revert-migrations
+
   cleanup:
     docker:
-      - image: cimg/base:stable
+      - image: amazon/aws-cli
     steps:
       - checkout
-      - install_awscli
-      - install_nodejs
+      - run: yum install -y tar gzip
+      - attach_workspace:
+          at: ~/project
       - run:
-          name: Remove old stacks and files
+          name: Clean up previous stacks
           command: |
-            export STACKS=($(aws cloudformation list-stacks \
-                --query "StackSummaries[*].StackName" \
-                --stack-status-filter CREATE_COMPLETE --no-paginate --output text)) 
-            echo Stack names: "${STACKS[@]}"
-            export OldWorkflowID=$(curl --insecure https://kvdb.io/${KVDB_BUCKET}/old_workflow_id)
-            echo Old Workflow ID: $OldWorkflowID 
-            if [[ "${STACKS[@]}" =~ "${OldWorkflowID}" ]]
+            OldWorkflowID=$(cat OldWorkflowID.txt)
+            export STACKS=($(aws cloudformation list-stacks --query "StackSummaries[*].StackName" --stack-status-filter CREATE_COMPLETE --no-paginate --output text)) 
+            echo Stack names: "${STACKS[@]}" 
+            if [[ "${CIRCLE_WORKFLOW_ID:0:7}" != "${OldWorkflowID}" ]]
             then
-              aws s3 rm "s3://udapeople-${OldWorkflowID}" --recursive
-              aws cloudformation delete-stack --stack-name "udapeople-backend-${OldWorkflowID}"
-              aws cloudformation delete-stack --stack-name "udapeople-frontend-${OldWorkflowID}"
+              echo "Destroying PREVIOUS BE + FE infrastructure with workflowID --> ${OldWorkflowID}"
+              aws s3 rm s3://udapeople-${OldWorkflowID} --recursive
+              aws cloudformation delete-stack --stack-name udapeople-backend-${OldWorkflowID}
+              aws cloudformation delete-stack --stack-name udapeople-frontend-${OldWorkflowID}
+              echo "---------- Deleted previous infrastructure ----------"
+            else
+              echo "This is the new BE + FE infrastructure: workflowID --> ${CIRCLE_WORKFLOW_ID:0:7}"
             fi
+
+      # - notify_slack
+      # - destroy_environment
+      # - revert_migrations
+            
+
 workflows:
   default:
     jobs:
@@ -393,7 +420,7 @@ workflows:
           requires: [test-frontend, test-backend, scan-frontend, scan-backend]
           filters:
             branches:
-              only: [master]
+              only: [main]
       - configure-infrastructure:
           requires: [deploy-infrastructure]
       - run-migrations:
