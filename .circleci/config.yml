@@ -61,7 +61,6 @@ commands:
               npm install
               npm run migration:revert
             fi
-            
 jobs:
   build-frontend:
     docker:
@@ -79,7 +78,6 @@ jobs:
       - save_cache:
           paths: [frontend/node_modules]
           key: frontend-deps
-
   build-backend:
     docker:
       - image: cimg/node:13.8.0
@@ -96,22 +94,19 @@ jobs:
       - save_cache:
           paths: [backend/node_modules]
           key: backend-deps
-
   test-frontend:
     docker:
       - image: cimg/node:13.8.0
     steps:
       - checkout
       - restore_cache:
-          keys: [backend-deps]
+          keys: [frontend-deps]
       - run:
-          name: front-end unit test
+          name: Front-end Unit Test
           command: |
-            cd backend
+            cd frontend
             npm install
             npm test
-
-                
   test-backend:
     docker:
       - image: cimg/node:13.8.0
@@ -120,30 +115,26 @@ jobs:
       - restore_cache:
           keys: [backend-deps]
       - run:
-          name: Back-end unit test
+          name: Back-end Unit Test
           command: |
             cd backend
             npm install
             npm test
-
   scan-frontend:
     docker:
       - image: cimg/node:13.8.0
     steps:
       - checkout
       - restore_cache:
-          keys: [backend-deps]
+          keys: [frontend-deps]
       - run:
-          name: front-end scan
+          name: Front-end Scan
           command: |
-            cd backend
+            cd frontend
             npm install
             npm audit fix --force --audit-level=critical
-            npm audit fix --force --audit-level=critical
             npm audit --audit-level=critical
-
-                
-  scan-backend:  
+  scan-backend:
     docker:
       - image: cimg/node:13.8.0
     steps:
@@ -151,14 +142,13 @@ jobs:
       - restore_cache:
           keys: [backend-deps]
       - run:
-          name: Back-end scan
+          name: Back-end Scan
           command: |
             cd backend
             npm install
             npm audit fix --force --audit-level=critical
             npm audit fix --force --audit-level=critical
             npm audit --audit-level=critical
-
   deploy-infrastructure:
     docker:
       - image: cimg/base:stable
@@ -215,8 +205,6 @@ jobs:
             cat inventory.txt
             ansible-playbook -i inventory.txt configure-server.yml
       - destroy-environment
-      # Here's where you will add some code to rollback on failure      
-
   run-migrations:
     docker:
       - image: cimg/node:13.8.0
@@ -229,7 +217,6 @@ jobs:
             cd backend
             npm install
             npm run migrations > migrations_dump.txt
-            cat migrations_dump.txt
       - run:
           name: Send migration status to kvdb.io
           command: |
@@ -239,7 +226,6 @@ jobs:
             fi
       - destroy-environment
       - revert-migrations
-
   deploy-frontend:
     docker:
       - image: cimg/base:stable
@@ -271,7 +257,6 @@ jobs:
             aws s3 cp dist s3://udapeople-${CIRCLE_WORKFLOW_ID:0:7} --recursive
       - destroy-environment
       - revert-migrations
-                     
   deploy-backend:
     docker:
       - image: cimg/base:stable
@@ -347,62 +332,50 @@ jobs:
 
   cloudfront-update:
     docker:
-      - image: amazon/aws-cli
-    working_directory: ~/project
+      - image: cimg/base:stable
     steps:
       - checkout
-      - run: yum install -y tar gzip
+      - install_awscli
+      - install_nodejs
       - run:
-          name: Fetch and save the old workflow ID responsible for the last release.
+          name: Save Old Workflow ID to kvdb.io
           command: |
-            OldWorkflowID=$(aws cloudformation list-exports --query "Exports[?Name==\`WorkflowID\`].Value" --no-paginate --output text)
-            echo $OldWorkflowID > OldWorkflowID.txt
-            cat OldWorkflowID.txt
+            export OLD_WORKFLOW_ID=$(aws cloudformation \
+                      list-exports --query "Exports[?Name==\`WorkflowID\`].Value" \
+                      --no-paginate --output text)
+            echo "Old Wokflow ID: $OLD_WORKFLOW_ID"
+            curl https://kvdb.io/${KVDB_BUCKET}/old_workflow_id -d "${OLD_WORKFLOW_ID}"
       - run:
-          name: Execute CloudFront template
-          no_output_timeout: 30m
+          name: Update cloudfront distribution
           command: |
-            OldWorkflowID=$(cat OldWorkflowID.txt)
-            aws cloudformation deploy --template-file .circleci/files/cloudfront.yml --stack-name InitialStack --parameter-overrides WorkflowID="${CIRCLE_WORKFLOW_ID:0:7}" --tags project=udapeople
-            echo "OldWorkflowID: ${OldWorkflowID}"
-            echo "NewWorkflowID: ${CIRCLE_WORKFLOW_ID:0:7}"
-      - persist_to_workspace:
-          root:  ~/project
-          paths:
-            - OldWorkflowID.txt
+            aws cloudformation deploy \
+              --template-file .circleci/files/cloudfront.yml \
+              --parameter-overrides WorkflowID="${CIRCLE_WORKFLOW_ID:0:7}" \
+              --stack-name InitialStack
       - destroy-environment
       - revert-migrations
-
   cleanup:
     docker:
-      - image: amazon/aws-cli
+      - image: cimg/base:stable
     steps:
       - checkout
-      - run: yum install -y tar gzip
-      - attach_workspace:
-          at: ~/project
+      - install_awscli
+      - install_nodejs
       - run:
-          name: Clean up previous stacks
+          name: Remove old stacks and files
           command: |
-            OldWorkflowID=$(cat OldWorkflowID.txt)
-            export STACKS=($(aws cloudformation list-stacks --query "StackSummaries[*].StackName" --stack-status-filter CREATE_COMPLETE --no-paginate --output text)) 
-            echo Stack names: "${STACKS[@]}" 
-            if [[ "${CIRCLE_WORKFLOW_ID:0:7}" != "${OldWorkflowID}" ]]
+            export STACKS=($(aws cloudformation list-stacks \
+                --query "StackSummaries[*].StackName" \
+                --stack-status-filter CREATE_COMPLETE --no-paginate --output text)) 
+            echo Stack names: "${STACKS[@]}"
+            export OldWorkflowID=$(curl --insecure https://kvdb.io/${KVDB_BUCKET}/old_workflow_id)
+            echo Old Workflow ID: $OldWorkflowID 
+            if [[ "${STACKS[@]}" =~ "${OldWorkflowID}" ]]
             then
-              echo "Destroying PREVIOUS BE + FE infrastructure with workflowID --> ${OldWorkflowID}"
-              aws s3 rm s3://udapeople-${OldWorkflowID} --recursive
-              aws cloudformation delete-stack --stack-name udapeople-backend-${OldWorkflowID}
-              aws cloudformation delete-stack --stack-name udapeople-frontend-${OldWorkflowID}
-              echo "---------- Deleted previous infrastructure ----------"
-            else
-              echo "This is the new BE + FE infrastructure: workflowID --> ${CIRCLE_WORKFLOW_ID:0:7}"
+              aws s3 rm "s3://udapeople-${OldWorkflowID}" --recursive
+              aws cloudformation delete-stack --stack-name "udapeople-backend-${OldWorkflowID}"
+              aws cloudformation delete-stack --stack-name "udapeople-frontend-${OldWorkflowID}"
             fi
-
-      # - notify_slack
-      # - destroy_environment
-      # - revert_migrations
-            
-
 workflows:
   default:
     jobs:
@@ -420,7 +393,7 @@ workflows:
           requires: [test-frontend, test-backend, scan-frontend, scan-backend]
           filters:
             branches:
-              only: [main]
+              only: [master]
       - configure-infrastructure:
           requires: [deploy-infrastructure]
       - run-migrations:
